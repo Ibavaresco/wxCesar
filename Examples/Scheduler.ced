@@ -1,0 +1,1259 @@
+;===============================================================================
+; SimpleRTOS - Very simple RTOS for Microcontrollers
+;
+; This is a 'toy' reinterpretation for an abstract machine called 'Cesar'
+; <https://www.inf.ufrgs.br/arq/wiki/doku.php?id=cesar>
+;===============================================================================
+; Copyright (c) 2007-2024, Isaac Marino Bavaresco
+; All rights reserved.
+;
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met:
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Neither the name of the author nor the
+;       names of its contributors may be used to endorse or promote products
+;       derived from this software without specific prior written permission.;;
+;
+; THIS SOFTWARE IS PROVIDED BY THE AUTHOR ''AS IS'' AND ANY
+; EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+; WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+; DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+; DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+; (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+; ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+; (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+; SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;===============================================================================
+; Notas sobre o processador:
+;
+; 1) Não é possível forçar a ocorrência de uma interrupção mudando o valor de INTS.
+; 2) Se não forem limpos os flags no registrador INTS, uma interrupção não reocorre
+;    depois que a ISR retorna.
+; 3) Não é possível restaurar os flags de habilitação das interrupções e em seguida
+;    chamar ou retornar de uma subrotina atomicamente. Isso é indesejável mas não
+;    impossibilita o funcionamento do RTOS.
+; 4) Não é possível ler ou alterar os flags diretamente. Isso é um problema para
+;    implementar a rotina 'Yield'.
+; 5) A instrução RTI funciona fora de uma interrupção e aparentemente não causa
+;    efeitos colaterais. Isso é o que salva a rotina 'Yield' e o RTOS como um todo.
+;    ATUALIZAÇÂO: Parece que causa efeitos colaterais, quebra a interrupção de teclado.
+;===============================================================================
+; TODO:
+;
+; Implementar 'queues', 'mutexes' e 'semaphores'.
+;===============================================================================
+IVET:		equ	hffbe
+TIMDT:		equ	hffd7
+INTS:		equ	hffd8
+INTE:		equ	hffd9
+TECST:		equ	hffda
+TECDT:		equ	hffdb
+LCD:		equ	hffdc
+LCD_LENGTH:	equ	 36	; Em bytes
+
+IDLESTACKLEN:	equ	 64	; Em bytes
+TASKSSTACKLEN:	equ	256	; Em bytes
+;===============================================================================
+TICK_DURATION:	equ	 10	; em milisegundos
+;===============================================================================
+		org	h0000
+;-------------------------------------------------------------------------------
+Start:		;---------------------------------------------------------------
+		; Vamos utilizar um pedaço da pilha da 'IdleTask' para a inicialização.
+		; Depois que o RTOS estiver no controle, só a 'IdleTask' vai utilizá-la,
+		; 
+		;---------------------------------------------------------------
+		; Nota: Seria bom se o assembler reconhecesse expressões aritméticas mais complexas,
+		;	tal como 'StackIdleTask + IDLESTACKLEN - 20'. aparentemente ele
+		;	só consegue processar somas e subtrações de dois termos.
+		;	Sugiro implementar um parser recursivo.
+		;---------------------------------------------------------------
+		mov	#StackIdleTask+44,r6		; Inicializa o ponteiro de pilha.
+
+		mov	#1,CriticalSctCnt
+
+		mov	#ISR,IVET			; Salva o endereço do tratador de interrupção no vetor.
+
+		;---------------------------------------------------------------
+		; Cria a Task1
+		;---------------------------------------------------------------
+		mov	#ContextTask1,r0		; Ponteiro para a estrutura CONTEXT a ser usada pela task.
+		mov	#StackTask1,r1			; Ponteiro para a pilha da task.
+		mov	#TASKSSTACKLEN,r2		; Tamanho da pilha da task.
+		mov	#Task1,r3			; Ponteiro para a função a ser executada como task.
+		mov	#0,r4				; Valor para ser passado para a função da task como argumento.
+		jsr	r7,CreateTask			; Cria a task.
+
+		; Exceto por uma task, todas as outras podem ser criadas depois,
+		; podem ser criadas pela primeira task ou por outras.
+
+		;---------------------------------------------------------------
+		; Cria a Task2
+		;---------------------------------------------------------------
+		mov	#ContextTask2,r0		; Ponteiro para a estrutura CONTEXT a ser usada pela task.
+		mov	#StackTask2,r1			; Ponteiro para a pilha da task.
+		mov	#TASKSSTACKLEN,r2		; Tamanho da pilha da task.
+		mov	#Task2,r3			; Ponteiro para a função a ser executada como task.
+		mov	#0,r4				; Valor para ser passado para a função da task como argumento.
+		jsr	r7,CreateTask			; Cria a task.
+
+		;---------------------------------------------------------------
+		; Cria a Task3
+		;---------------------------------------------------------------
+		mov	#ContextTask3,r0		; Ponteiro para a estrutura CONTEXT a ser usada pela task.
+		mov	#StackTask3,r1			; Ponteiro para a pilha da task.
+		mov	#TASKSSTACKLEN,r2		; Tamanho da pilha da task.
+		mov	#Task3,r3			; Ponteiro para a função a ser executada como task.
+		mov	#0,r4				; Valor para ser passado para a função da task como argumento.
+		jsr	r7,CreateTask			; Cria a task.
+
+		;---------------------------------------------------------------
+		; Cria a TaskClk
+		;---------------------------------------------------------------
+		mov	#ContextTaskClk,r0		; Ponteiro para a estrutura CONTEXT a ser usada pela task.
+		mov	#StackTaskClk,r1		; Ponteiro para a pilha da task.
+		mov	#TASKSSTACKLEN,r2		; Tamanho da pilha da task.
+		mov	#TaskClk,r3			; Ponteiro para a função a ser executada como task.
+		mov	#0,r4				; Valor para ser passado para a função da task como argumento.
+		jsr	r7,CreateTask			; Cria a task.
+
+		;---------------------------------------------------------------
+		; Cria a TaskClk2
+		;---------------------------------------------------------------
+		mov	#ContextTaskClk2,r0		; Ponteiro para a estrutura CONTEXT a ser usada pela task.
+		mov	#StackTaskClk2,r1		; Ponteiro para a pilha da task.
+		mov	#TASKSSTACKLEN,r2		; Tamanho da pilha da task.
+		mov	#TaskClk2,r3			; Ponteiro para a função a ser executada como task.
+		mov	#0,r4				; Valor para ser passado para a função da task como argumento.
+		jsr	r7,CreateTask			; Cria a task.
+
+		;---------------------------------------------------------------
+		; Cria a TaskKBD
+		;---------------------------------------------------------------
+		mov	#ContextTaskKBD,r0		; Ponteiro para a estrutura CONTEXT a ser usada pela task.
+		mov	#StackTaskKBD,r1		; Ponteiro para a pilha da task.
+		mov	#TASKSSTACKLEN,r2		; Tamanho da pilha da task.
+		mov	#TaskKBD,r3			; Ponteiro para a função a ser executada como task.
+		mov	#0,r4				; Valor para ser passado para a função da task como argumento.
+		jsr	r7,CreateTask			; Cria a task.
+
+		;---------------------------------------------------------------
+		; Cria a TaskMsg
+		;---------------------------------------------------------------
+		mov	#ContextTaskMsg,r0		; Ponteiro para a estrutura CONTEXT a ser usada pela task.
+		mov	#StackTaskMsg,r1		; Ponteiro para a pilha da task.
+		mov	#TASKSSTACKLEN,r2		; Tamanho da pilha da task.
+		mov	#TaskMsg,r3			; Ponteiro para a função a ser executada como task.
+		mov	#0,r4				; Valor para ser passado para a função da task como argumento.
+		jsr	r7,CreateTask			; Cria a task.
+
+		;---------------------------------------------------------------
+		; Vamos fazer o ponteiro para o contexto da task corrente apontar para
+		; um contexto dummy, para a interrupção ter onde salvar o contexto
+		; "inexistente" deste loop principal. Nunca mais vai ser usado.
+		;---------------------------------------------------------------
+		mov	#DummyContext,CurrentTask
+
+		;---------------------------------------------------------------
+		; Cria a Idle Task
+		;---------------------------------------------------------------
+		mov	#ContextIdleTask,r0		; Ponteiro para a estrutura CONTEXT a ser usada pela task.
+		mov	#StackIdleTask,r1		; Ponteiro para a pilha da task.
+		mov	#IDLESTACKLEN,r2		; Tamanho da pilha da task.
+		mov	#IdleTask,r3			; Ponteiro para a função a ser executada como task.
+		mov	#0,r4				; Valor para ser passado para a função da task como argumento.
+		; Essa task é criada de uma forma diferente pois ele não vai fazer
+		; parte da lista de tasks prontas.
+		jsr	r7,InitializeTask		; Cria a task.
+
+		;---------------------------------------------------------------
+		; Prepara a interrupção do timer para gerar os ticks.
+		;---------------------------------------------------------------
+		mov	#0,INTS
+		mov	#TICK_DURATION,TIMDT	; Ajusta a periodicidade do timer para a duração do tick.
+		or	#h81,INTE		; Habilita as interrupções.
+
+		;---------------------------------------------------------------
+		; Vamos ficar neste loop até acontecer a primeira interrupção,
+		; quando o RTOS toma o controle e não retorna nunca mais.
+		;---------------------------------------------------------------
+DeadLoop:	br	DeadLoop
+;===============================================================================
+; Offsets para os campos da estrutura CONTEXT.
+;-------------------------------------------------------------------------------
+CTXT_R6:	equ	 0
+CTXT_LIST:	equ	 2
+CTXT_PREV:	equ	 4
+CTXT_NEXT:	equ	 6
+CTXT_TICK_TO_WK:equ	 8
+CTXT_DELAY_LIST:equ	10
+CTXT_DELAY_PREV:equ	12
+CTXT_DELAY_NEXT:equ	14
+
+CTXT_LENGTH:	equ	 8	; Em words
+;===============================================================================
+ISR:		mov	r5,-(r6)			; Salva r6 na pilha para podermos ter pelo menos um registrador para trabalhar.
+		;---------------------------------------------------------------
+		mov	INTE,r5				; Verifica se a interrupção do timer está habilitada...
+		and	INTS,r5				; ...e também sinalizada.
+		and	#h01,r5
+		beq	NotTimer			; Ou a interrupção do timer não está habilitada ou não está sinalizada, então não vamos tratá-la.
+		;---------------------------------------------------------------
+		; A interrupção do timer ocorreu e está habilitada, vamos tratá-la.
+		;
+		; Aqui nós salvamos o contexto da task que estava rodando e trocamos
+		; pelo contexto da próxima task na lista de tasks prontas.
+		;---------------------------------------------------------------
+		
+		; Apaga o flag de interrupção do timer.
+		and	#hfe,INTS
+
+		mov	r4,-(r6)
+		mov	r3,-(r6)
+		mov	r2,-(r6)
+		mov	r1,-(r6)
+		mov	r0,-(r6)
+		mov	CriticalSctCnt,-(r6)
+
+		mov	CurrentTask,r0			; Obtém o ponteiro para o contexto da task corrente.
+		mov	r6,CTXT_R6(r0)			; Salva o SP da task corrente no seu contexto.
+
+		jsr	r7,Switch			; Escolhe a próxima task a rodar
+		
+		;mov	CurrentTask,r0	; Não precisa, Switch já retorna com 'CurrentTask' em r0	; Obtém o ponteiro para o contexto da task corrente.
+		mov	CTXT_R6(r0),r6			; Restaura o SP da (nova) task corrente a partir da sua pilha.
+
+		mov	(r6)+,CriticalSctCnt
+		mov	(r6)+,r0
+		mov	(r6)+,r1
+		mov	(r6)+,r2
+		mov	(r6)+,r3
+		mov	(r6)+,r4
+		;---------------------------------------------------------------
+		; Aqui nós podemos tratar a interrupção do teclado, se for necessário.
+		;---------------------------------------------------------------
+		; Nota: Aparentemente a interrupção do teclado não está funcionando com o RTOS.
+		;	Posivelmente devido a uma interação com o RTI em 'Yield' ou um bug no simulador.
+		;
+		; Então vamos fazer a leitura do teclado por "polling", a cada interupção do timer.
+		; Na verdade este é o método mais indicado de qualquer forma, não há necessidade de
+		; um teclado gerar interrupções.
+		;---------------------------------------------------------------
+NotTimer:	;mov	INTE,r5				; Verifica se a interrupção do timer está habilitada...
+		;and	INTS,r5				; ...e também sinalizada.
+		;and	#h02,r5
+		;beq	NotKeyboard			; Ou a interrupção do teclado não está habilitada ou não está sinalizada, então não vamos tratá-la.
+		;---------------------------------------------------------------
+		mov	TECST,r5
+		and	#h80,r5
+		beq	NotKeyboard
+
+		;---------------------------------------------------------------
+		; Por enquanto vamos colocar o resultado em uma variável global, mas 
+		; mais para frente vamos implementar comunicação inter-processos, na forma
+		; de "queues".
+		;---------------------------------------------------------------
+		mov	TECDT,KBDBuffer
+		and	#h7f,TECST
+		;---------------------------------------------------------------
+NotKeyboard:	mov	(r6)+,r5
+		;---------------------------------------------------------------
+		rti
+;===============================================================================
+; Lê um caractere do buffer de software do teclado (se houver) para r0.
+; Retorna também o flag Z ligado para indicar se não tem caractere, ou desligado para indicar que tem.
+;-------------------------------------------------------------------------------
+GetCh:		and	#h7f,INTE	; Desabilita a interrupção do teclado
+
+		mov	KBDBuffer,r0	; Copia KBDBUF para o registrador r0...
+		mov	#0,KBDBuffer	; ...e zera KBDBUF
+
+		or	#h80,INTE	; Reabilita a interrupção do teclado
+
+		tst	r0		; Ajusta o flag Z para representar a presença ou não de caractere
+
+		rts	r7		; Restorna para o chamador
+;===============================================================================
+Switch:		inc	SystemTick			; SystemTick++;
+
+		;jsr	r7,CheckDelayList		; CheckDelayList();	Vamos fazer inline mesmo, aqui embaixo
+
+		mov	DelayedTasks,r0			; while( ( p = DelayedTasks ) != NULL && (signed long)( p->TDelay - SystemTick ) <= 0 )
+ChkDLLoop:	tst	r0
+		beq	ChkDLEnd
+		mov	CTXT_TICK_TO_WK(r0),r1
+		sub	SystemTick,r1
+		beq	ChkDLL1
+		bpl	ChkDLEnd
+							; 	{
+							; 	/* Remove the task from the delayed task list and from any event's list.*/
+ChkDLL1:	jsr	r7,RemoveTaskFromList		; 	RemoveTaskFromAllLists( p );
+		jsr	r7,RemoveTaskFromDelayList
+							; 	/* Insert the task at the end of the running tasks list.*/
+		mov	#ReadyTasks,r1			; 	InsertTaskInReadyTasksList( p );
+		mov	#1,r2
+		jsr	r7,InsertTaskInList
+							; 	}
+ChkDLEnd:
+		mov	ReadyTasks,r0
+		tst	r0
+		bne	ThereIsTask
+
+NoTask:		mov	#ContextIdleTask,r0
+		br	SwitchL1
+							; /* The current task ran for at least one full time slice... */
+ThereIsTask:	tst	AlreadySwitched			; if( AlreadySwitched == 0 && CurrentTask->Priority == HighestReadyPriority )
+		bne	SwitchL1
+							; 	/* ... it doesn't deserve an additional time slice. */
+		mov	CTXT_NEXT(r0),r0			; 	ReadyTasks[HighestReadyPriority]
+		mov	r0,ReadyTasks			; 		= ReadyTasks[HighestReadyPriority]->Next;
+							; 
+SwitchL1:	mov	r0,CurrentTask			; CurrentTask	= ReadyTasks[HighestReadyPriority];
+							; 
+							; /*
+							; The upcoming task will run from the very beginning of its time slice,
+							; at the end of this slice it will be switched off.
+							; */
+		mov	#0,AlreadySwitched		; AlreadySwitched		= 0;
+							; 
+		mov	TickHook,r1			; if( TickHook != NULL )
+		tst	r1
+		beq	SwitchEnd
+		mov	r1,r7				; 	TickHook();
+
+SwitchEnd:	rts	r7
+;===============================================================================
+; Remove uma estrutura CONTEXT de uma lista.
+;
+; A lista é duplamente encadeada. No sentido para trás (ponteiro PREV), a lista
+; é sempre circular. No sentido para frente (ponteiro NEXT), a lista pode ser
+; linear ou circular. A Lista de tasks prontas é CIRCULAR/CIRCULAR.
+;
+; Parâmetros:
+;	r0	Task - Ponteiro para a estrutura.
+;-------------------------------------------------------------------------------
+RemoveTaskFromList:
+		tst	r0			;	if( Task == NULL )
+		beq	RemEnd 			;		return;
+						;
+						;	/* Make 'List' point to the pointer to the head of the list. */
+		mov	CTXT_LIST(r0),r1	;	List            = Task->List;
+						;
+		tst	r1			;	if( List == NULL )
+		beq	RemEnd			;		return;
+						;
+						;	/* Mark the task as not belonging to any list. */
+		mov	#0,CTXT_LIST(r0)	;	Task->List      = NULL;
+						;
+						;	/* Make 'Previous' point to the task that precedes this one in the list (if any). */
+		mov	CTXT_PREV(r0),r3	;	Previous        = Task->Previous;
+						;
+						;	/* Un-link the task from the list.*/
+		mov	#0,CTXT_PREV(r0)	;	Task->Previous  = NULL;
+						;
+						;	/* Make 'Next' point to the task that follows this one in the list (if any). */
+		mov	CTXT_NEXT(r0),r4	;	Next            = Task->Next;
+						;
+						;	/* Un-link the task from the list. */
+		mov	#0,CTXT_NEXT(r0)	;	Task->Next      = NULL;
+						;
+						;	/* The task is the only one in a circular list... */
+		cmp	r3,r0			;	if( Previous == Task )
+		bne	RemL1			;		{
+						;		/* ... just remove it from the list. */
+		mov	#0,(r1)			;		*List       = NULL;
+						;		/* Finished */
+		rts	r7			;		return;
+						;		}
+						;
+						;	/* The task is the head of the list */
+RemL1:		cmp	(r1),r0			;	if( *List == Task )
+		bne	RemL2			;		/* Make the next task (if any) be the head of the list. */
+		mov	r4,(r1)			;		*List   = Next;
+						;
+						;	/* If there is a previous task... */
+RemL2:		tst	r3			;	if( Previous != NULL )
+		beq	RemL3			;		/* ... make it point to the task that follows this one in the list (if any). */
+		mov	r4,CTXT_NEXT(r3)	;		Previous->Next  = Next;
+						;
+						;	/* If there is a next task... */
+RemL3:		tst	r4			;	if( Next != NULL )
+		beq	RemEnd			;		/* ... make it point to the task that precedes this one in the list (if any). */
+		mov	r3,CTXT_PREV(r4)	;		Next->Previous  = Previous;
+
+RemEnd:		rts	r7
+;===============================================================================
+RemoveTaskFromDelayList:
+		tst	r0			; if( Task == NULL )
+		beq	RemDelEnd		; 	return;
+						; 
+		tst	CTXT_DELAY_LIST(r0)	; if( Task->DelayList == NULL )
+		beq	RemDelEnd		; 	return;
+						; 
+		mov	CTXT_DELAY_PREV(r0),r1	; PreviousDelayedTask = Task->PreviousDelayedTask;
+		mov	CTXT_DELAY_NEXT(r0),r2	; NextDelayedTask     = Task->NextDelayedTask;
+						; 
+						; /* If this task is the first one in the list of delayed tasks... */
+		tst	r1			; if( PreviousDelayedTask == NULL )
+		bne	RemDelL1		; 	/* ... make the next task in the list (if any) be the first. */
+		mov	r2,DelayedTasks		; 	DelayedTasks    = NextDelayedTask;
+		br	RemDelL2		; else
+						; 	/* ... else make the task before this one in the list point to the task following this one (if any). */
+RemDelL1:	mov	r2,CTXT_DELAY_NEXT(r1)	; 	PreviousDelayedTask->NextDelayedTask	= NextDelayedTask;
+						; 
+						; /* If there is a task after this one in the list... */
+RemDelL2:	tst	r2			; if( NextDelayedTask != NULL )
+		beq	RemDelL3		; 	/* ... make it point to the task before this one in the list (if any). */
+		mov	r1,CTXT_DELAY_PREV(r2)	; 	NextDelayedTask->PreviousDelayedTask	= PreviousDelayedTask;
+						; 
+						; /* Mark this task as not having a previous one in the delayed tasks list.*/
+RemDelL3:	mov	#0,CTXT_DELAY_PREV(r0)	; Task->PreviousDelayedTask	= NULL;
+						; /* Mark this task as not having a next one in the delayed tasks list.*/
+		mov	#0,CTXT_DELAY_NEXT(r0)	; Task->NextDelayedTask		= NULL;
+						; /* Mark this task as not belonging to the delayed tasks list.*/
+		mov	#0,CTXT_DELAY_LIST(r0)	; Task->DelayList				= NULL;
+
+RemDelEnd:	rts	r7
+;===============================================================================
+; Insere uma estrutura CONTEXT em uma lista.
+;
+; A lista é duplamente encadeada. No sentido para trás (ponteiro PREV), a lista
+; é sempre circular. No sentido para frente (ponteiro NEXT), a lista pode ser
+; linear ou circular. A Lista de tasks prontas é CIRCULAR/CIRCULAR.
+;
+; Parâmetros:
+;	r0	Task - Ponteiro para a estrutura.
+;	r1	List - Ponteiro para a lista.
+;	r2	Mode - Tipo da lista: 0 = Linear, 1 = Circular.
+;-------------------------------------------------------------------------------
+InsertTaskInList:
+		tst	r0			;	if( Task == NULL )
+		beq	InsEnd			;		return;
+						;
+		tst	r1			;	if( List == NULL )
+		beq	InsEnd			;		return;
+						;
+						;	/* Mark the task as belonging to the list.*/
+		mov	r1,CTXT_LIST(r0)	;	Task->List	= List;
+						;
+						;	/* The list is empty...*/
+		tst	(r1)			;	if( *List == NULL )
+		bne	InsL2			;		{
+						;		/* ... insert the task into the list.*/
+		mov	r0,(r1)			;		*List		= Task;
+						;		/* The list is circular, the task is the previous of itself.*/
+		mov	r0,CTXT_PREV(r0)	;		Task->Previous	= Task;
+						;		/* If the list is circular, the task is the next to itself.*/
+		mov	r0,r3			;		Task->Next	= Mode == 0 ? NULL : Task;
+		tst	r2
+		bne	InsL1
+		mov	#0,r3
+InsL1:		mov	r3,CTXT_NEXT(r0)
+						;		}
+		br	InsEnd			;	else
+						;		{
+						;		/* Make 'First' point to the first element in the list.*/
+InsL2:		mov	(r1),r3			;		First		= *List;
+						;		/* The last element of a circular list is the element before the first.*/
+		mov	CTXT_PREV(r3),r4	;		Last		= First->Previous;
+						;		/* We are inserting at the end, this element becomes the last one.*/
+		mov	r0,CTXT_PREV(r3)	;		First->Previous = Task;
+		tst	r2			;		Task->Next	= Mode == 0 ? NULL : First;
+		bne	InsL3
+		mov	#0,r3
+InsL3:		mov	r3,CTXT_NEXT(r0)
+
+		mov	r0,CTXT_NEXT(r4)	;		Last->Next	= Task;
+		mov	r4,CTXT_PREV(r0)	;		Task->Previous	= Last;
+						;		}
+InsEnd:		rts	r7
+;===============================================================================
+; Insere uma estrutura CONTEXT na lista de delay.
+;
+; A lista é duplamente encadeada e linear nos dois sentidos. Essa lista é mantida
+; ordenada pelo número do tick que a task deve acordar. Todas as inserções são
+; precedidas por uma busca pela posição correta de inserção.
+;
+; Parâmetros:
+;	r0	Task - Ponteiro para a estrutura.
+;	r1	Time - Número do tick que a task deve acordar.
+;-------------------------------------------------------------------------------
+InsertTaskInDelayList:
+		tst	r0					; if( Task == NULL )
+		beq	InsDelEnd				; 	return;
+								; 
+								; /* Set the new task's time to wake.*/
+		mov	r1,CTXT_TICK_TO_WK(r0)			; Task->TDelay	= Time;
+								; /* Make the new task belong to the delayed tasks list.*/
+		mov	#DelayedTasks,CTXT_DELAY_LIST(r0)	; Task->DelayList = &DelayedTasks;
+								; 
+								; /* The list is empty...*/
+		tst	DelayedTasks				; if( DelayedTasks == NULL )
+		bne	InsDelL1				; 	{
+								; 	/* ... just insert the task into the list.*/
+		mov	r0,DelayedTasks				; 	DelayedTasks                = Task;
+								; 	/* The list is linear, there is no previous task.*/
+		mov	#0,CTXT_DELAY_PREV(r0)			; 	Task->PreviousDelayedTask   = NULL;
+								; 	/* The list is linear, there is no next task.*/
+		mov	#0,CTXT_DELAY_NEXT(r0)			; 	Task->NextDelayedTask       = NULL;
+								; 	}
+								; /* The list is not empty...*/
+		br	InsDelEnd				; else
+								; 	{
+								; 	/* ... make 'p' point to the first element.*/
+InsDelL1:	mov	DelayedTasks,r2				; 	p = DelayedTasks;
+								; 	/* Get the first element's time to wake.*/
+		mov	CTXT_TICK_TO_WK(r2),r3			; 	t = p->TDelay;
+								; 	/* The time to wake of the new task is less than the first element's...*/
+		mov	r1,r5					; 	if( (signed long)( Time - t ) < 0 || ( (signed long)( Time - t ) == 0 && Task->Priority > p->Priority ))
+		sub	r3,r5
+		bcc	InsDelL2
+								; 		{
+								; 		/* ... insert the task as the first element.*/
+		mov	r0,DelayedTasks				; 		DelayedTasks                = Task;
+								; 		/* The task is now the first element, there is no previous one.*/
+		mov	#0,CTXT_DELAY_PREV(r0)			; 		Task->PreviousDelayedTask   = NULL;
+								; 		/* The former first element is now the next one of this task.*/
+		mov	r2,CTXT_DELAY_NEXT(r0)			; 		Task->NextDelayedTask       = p;
+								; 		/* This task is now the previous one of the former first element.*/
+		mov	r0,CTXT_DELAY_PREV(r2)			; 		p->PreviousDelayedTask      = Task;
+								; 		}
+								; 	/* We need to find where the task is to be inserted...*/
+		br	InsDelEnd				; 	else
+								; 		{
+								; 		/* ... iterate through the remainig elements of the list (if any).*/
+InsDelL2:	mov	CTXT_DELAY_NEXT(r2),r4			; 		for( q = p->NextDelayedTask; q != NULL; q = q->NextDelayedTask )
+InsDelLoop:	tst	r4
+		beq	InsDelL3
+								; 			{
+								; 			/* Get the time to wake of the task pointed to by 'q'.*/
+		mov	CTXT_TICK_TO_WK(r4),r3			; 			t = q->TDelay;
+								; 			/* The time to wake of the new task is less than the one pointed to by 'q'...*/
+		mov	r1,r5					; 			if( (signed long)( Time - t ) < 0 || ( (signed long)( Time - t ) == 0 && Task->Priority > p->Priority ))
+		sub	r3,r5
+								; 				/* ... stop.*/
+		bmi	InsDelL3				; 				break;
+								; 			/* Advance one element.*/
+		mov	r4,r2					; 			p = q;
+
+		mov	CTXT_DELAY_NEXT(r4),r4			; "q = q->NextDelayedTask" do 'for'.
+		br	InsDelLoop				; 			}
+								; 		/* We are inserting after the element pointed to by 'p'.*/
+InsDelL3:	mov	CTXT_DELAY_NEXT(r2),r3			; 		Next                        = p->NextDelayedTask;
+		mov	r2,CTXT_DELAY_PREV(r0)			; 		Task->PreviousDelayedTask   = p;
+		mov	r3,CTXT_DELAY_NEXT(r0)			; 		Task->NextDelayedTask       = Next;
+		mov	r0,CTXT_DELAY_NEXT(r2)			; 		p->NextDelayedTask          = Task;
+								; 		/* There is a next element...*/
+		tst	r3					; 		if( Next != NULL )
+		beq	InsDelEnd				; 			/* ... make it point to the new task.*/
+		mov	r0,CTXT_DELAY_PREV(r3)			; 			Next->PreviousDelayedTask   = Task;
+								; 		}
+								; 	}
+InsDelEnd:	rts	r7
+;===============================================================================
+; Põe a task corrente para dormir por um número de ticks.
+;
+; Parâmetros:
+;	r0	Número de ticks que a task vai dormir. No máximo 32767, que corresponde
+;		a 327,67 s com o tick a 10 ms. Se o valor for maior que 32767, fica
+;		sendo negativo, e indica que a task deve ser suspensa, isto é, não
+;		tem tempo de acordar e não é inserida na lista de 'DelayedTasks'.
+;
+; Retorna:
+;	Nada
+;-------------------------------------------------------------------------------
+Sleep:		mov	r0,-(r6)	; Salva r0 (t) na pilha para usar depois.
+
+		jsr	r7,EnterCriticalSection
+								; /* Remove the task from the running tasks list.*/
+		mov	CurrentTask,r0				; RemoveTaskFromAllLists( CurrentTask );
+		jsr	r7,RemoveTaskFromList
+		;mov	CurrentTask,r0	; Não é necessário porque 'RemoveTaskFromList' não altera r0.
+		jsr	r7,RemoveTaskFromDelayList
+								; 
+								; /* Flag that the running tasks list already changed.*/
+		mov	#1,AlreadySwitched			; AlreadySwitched = 1;
+								; /* The sleep time is less than the maximum...*/
+								; if( (signed long)t >= 0 )
+		mov	(r6)+,r1	; Restaura r1 (t) da pilha
+		tst	r1
+		bmi	SleepL1
+								;  /* Insert the task into the delayed tasks list.*/
+		add	SystemTick,r1				;  InsertTaskInDelayList( CurrentTask, SystemTick + t );
+		;mov	CurrentTask,r0	; Não foi alterado
+		jsr	r7,InsertTaskInDelayList
+
+SleepL1:	jsr	r7,Yield				; ForceYield();
+
+		jsr	r7,ExitCriticalSection
+								; RestoreInterrupts( s );
+		rts	r7
+;===============================================================================
+; Retorna uma task à lista de tasks prontas. Pode acordar antes do tempo uma task que
+; está em 'Sleep' ou fazer rodar uma task que está bloqueada por tempo indeterminado.
+;
+; Parâmetros:
+;	r0	Ponteiro para o contexto da task que será restaurada.
+;-------------------------------------------------------------------------------
+ResumeTaskISR:							; /* The task is the current task or it is already in the ready tasks list... */
+		tst	r0					; if( Task == NULL || Task == CurrentTask || Task->List == &ReadyTasks[Task->Priority] )
+		beq	ResumeTaskEnd				;     {
+		cmp	r0,CurrentTask				;     RestoreInterrupts( s );
+		beq	ResumeTaskEnd				;     return 0;
+		cmp	CTXT_LIST(r0),#ReadyTasks		;     }
+		beq	ResumeTaskEnd
+								
+		jsr	r7,RemoveTaskFromList			; RemoveTaskFromAllLists( Task );
+		jsr	r7,RemoveTaskFromDelayList
+								; /* Insert the task in the proper ready tasks list. */
+		mov	#ReadyTasks,r1				; InsertTaskInReadyTasksList( Task );
+		jsr	r7,InsertTaskInList
+
+ResumeTaskEnd:	rts	r7
+;-------------------------------------------------------------------------------
+ResumeTask:	jsr	r7,EnterCriticalSection			; register intsave_t  s   = SaveAndDisableInterrupts();
+
+		jsr	r7,ResumeTaskISR
+
+		jsr	r7,ExitCriticalSection			; RestoreInterrupts( s );
+		rts	r7
+;===============================================================================
+; Cria uma nova task para ser executada
+;
+; Parâmetros:
+;	r0	Ponteiro para o contexto a ser usado pela task.
+;	r1	Ponteiro para a pilha da task.
+;	r2	Tamanho da pilha da task.
+;	r3	Ponteiro para a função da task.
+;	r4	Valor inicial para o registrador r0 da task (parâmetro).
+;
+; Retorna:
+;	Nada
+;-------------------------------------------------------------------------------
+InitializeTask:
+		;---------------------------------------------------------------
+		; Inicializa a pilha da task.
+		;---------------------------------------------------------------
+		add	r1,r2			; Agora r2 contém a base da pilha da task.
+
+		mov	r3,-(r2)		; Guarda o endereço de início da função da task na sua pilha.
+		mov	#0,-(r2)		; Valor que será carregado nos flags quando a task iniciar a execução.
+		mov	#0,-(r2)		; Valor inicial para o r5 da task.
+		mov	#0,-(r2)		; Valor inicial para o r4 da task.
+		mov	#0,-(r2)		; Valor inicial para o r3 da task.
+		mov	#0,-(r2)		; Valor inicial para o r2 da task.
+		mov	#0,-(r2)		; Valor inicial para o r1 da task.
+		mov	r4,-(r2)		; Valor inicial para o r0 da task.
+		mov	#0,-(r2)		; Valor inicial para o CriticalSctCnt da task.
+
+		;---------------------------------------------------------------
+		; Inicializa a estrutura CONTEXT da task.
+		;---------------------------------------------------------------
+		mov	r2,CTXT_R6(r0)		; Salva o topo da pilha da task no contexto
+		mov	#0,CTXT_LIST(r0)	; Por enquanto a task não pertence a nenhuma lista...
+		mov	#0,CTXT_PREV(r0)	; ...portanto não tem nenhuma outra antes dela...
+		mov	#0,CTXT_NEXT(r0)	; ...e nem depois.
+		mov	#0,CTXT_TICK_TO_WK(r0)	; A task também não está na lista de delay...
+		mov	#0,CTXT_DELAY_LIST(r0)	; ...portanto também não tem nenhuma outra antes...
+		mov	#0,CTXT_DELAY_PREV(r0)	; ...e nem depois...
+		mov	#0,CTXT_DELAY_NEXT(r0)	; ...e não tem tempo de acordar.
+
+		rts	r7
+;-------------------------------------------------------------------------------
+CreateTask:	;mov	r0,-(r6)	; Não é necessário, 'EnterCriticalSection' e 'InitializeTask' não alteram r0.
+
+		jsr	r7,EnterCriticalSection
+
+		jsr	r7,InitializeTask
+
+		;mov	(r6)+,r0	; Não é necessário, 'EnterCriticalSection' e 'InitializeTask' não alteram r0.
+		mov	#ReadyTasks,r1
+		mov	#1,r2
+		jsr	r7,InsertTaskInList
+
+		jsr	r7,ExitCriticalSection
+
+		rts	r7
+;===============================================================================
+; Passa o controle para a próxima task, antes da ocorrência da interrupção do timer.
+;
+; Parâmetros:
+;	Nada
+;
+; Retorna:
+;	Nada
+;-------------------------------------------------------------------------------
+Yield:		mov	#YieldEnd,-(r6)			; Salva como endereço de retorno o endereço do label YieldEnd. É por lá que nossa task vai reentrar.
+		mov	#0,-(r6)			; Nesse processador não tem como salvarmos os flags por software, vamos empilhar 0. No retorno nossos flags vão estar todos zerados.
+		
+		jsr	r7,EnterCriticalSection
+
+		mov	r5,-(r6)			; Salva todos os outros registradores.
+		mov	r4,-(r6)
+		mov	r3,-(r6)
+		mov	r2,-(r6)
+		mov	r1,-(r6)
+		mov	r0,-(r6)
+		mov	CriticalSctCnt,-(r6)
+
+		mov	CurrentTask,r0			; Obtém o ponteiro para o contexto da task corrente.
+		mov	r6,CTXT_R6(r0)			; Salva o SP da task corrente no seu contexto.
+
+		mov	ReadyTasks,r0			; Obtém o ponteiro para o contexto da primeira task da lista de tasks prontas.
+		tst	r0				; Verifica se o ponteiro é NULL.
+		bne	YieldThereIsTask		; Não é NULL, tem alguma task para se executada, podemos continuar.
+		;---------------------------------------------------------------
+		; Não tem nenhuma task pronta, vamos excutar a Idle Task.
+		;---------------------------------------------------------------
+		mov	#ContextIdleTask,r0
+		br	YieldL1
+		;---------------------------------------------------------------
+YieldThereIsTask:
+		mov	#1,AlreadySwitched		; Sinaliza que a task que entrar agora vai ter o restante desse tick mais o próximo tick inteiro para rodar.
+		mov	CTXT_NEXT(r0),r0		; Atualiza o ponteiro da task corrente para essa nova task.
+		mov	r0,ReadyTasks			; Atualiza ReadyTasks para apontar para a próxima task da lista.
+
+YieldL1:	mov	r0,CurrentTask			; Obtém o ponteiro para o contexto da task corrente. (não é necessário porque já foi feito logo acima).
+		mov	CTXT_R6(r0),r6			; Restaura o SP da (nova) task corrente a partir da sua pilha.
+
+		mov	(r6)+,CriticalSctCnt
+		mov	(r6)+,r0
+		mov	(r6)+,r1
+		mov	(r6)+,r2
+		mov	(r6)+,r3
+		mov	(r6)+,r4
+		mov	(r6)+,r5
+
+		jsr	r7,ExitCriticalSection
+		; Exatamente nesse ponto pode ocorrer uma interrupção indesejada,
+		; mas como esses processador é tão rudimentar não temos como prevenir.
+		rti					; Salta para a task continuar de onde foi interrompida.
+
+YieldEnd:	rts	r7
+;===============================================================================
+EnterCriticalSection:
+		mov	r1,-(r6)
+		mov	CriticalSctCnt, r1
+		and	#h7f,INTE		; Desabilita as interrupções.
+		inc	CriticalSctCnt		; Incrementa a contagem de invocações.
+		mov	(r6)+,r1
+		rts	r7
+;===============================================================================
+ExitCriticalSection:
+		mov	r1,-(r6)
+		mov	CriticalSctCnt, r1
+		mov	(r6)+,r1
+		tst	CriticalSctCnt		; O contador de seção crítica ja é zero...
+		beq	ExitCSL1		; ...então as interrupções já estão habilitadas.
+
+		dec	CriticalSctCnt		; Decrementa o contador. Se não chegou a zero...
+		bne	ExitCSEnd		; ...simplesmente vai embora.
+
+ExitCSL1:	or	#h80,INTE		; Reabilita as interrupções.
+
+ExitCSEnd:	rts	r7
+;===============================================================================
+;===============================================================================
+;===============================================================================
+;===============================================================================
+; Esta task somente executa quando todas as outras tasks estão dormindo ou bloqueadas,
+; então o seu tempo de execução não é regular nem previsível. Em algumas poucas
+; situações pode ser útil pôr código aqui.
+; Ela precisa existir para que o sistema tenha sempre pelo menos uma pilha ativa,
+; caso todas as outras tasks durmam ou fiquem bloqueadas. Pode ser utilizada para
+; contar o tempo ocioso do sistema.
+;-------------------------------------------------------------------------------
+IdleTask:
+		;---------------------------------------------------------------
+		; Código colocado aqui antes do loop vai ser executado apenas uma
+		; única vez após o sistema ser iniciado. Não é possível prever
+		; quanto tempo depois da inicialização isso vai acontecer.
+		;---------------------------------------------------------------
+
+		; Código do programador aqui.
+
+		;---------------------------------------------------------------
+IdleTaskLoop1:	;jsr	r7,Yield	; Nesse sistema tão rudimentar não serve para nada.
+					; Se estamos executando a Idle Task é porque todas
+					; as outras tasks estão dormindo ou bloqueadas e
+					; não tem nenhum outro meio de acordá-las que não
+					; seja as interrupções de timer ou teclado. Então
+					; vamos simplesmente esperar a interrupção.
+
+		;---------------------------------------------------------------
+		; O programador pode pôr código aqui, porém ele não pode bloquear
+		; (isto é, não pode chamar 'Sleep' ou qualquer outra função que
+		; impeça os chaveamentos de contexto). Também não pode desabilitar
+		; as interrupções por muito tempo.
+		;---------------------------------------------------------------
+
+		; Código do programador aqui.
+
+		mov	IdleTaskCntr,LCD+32
+		inc	IdleTaskCntr
+		cmp	IdleTaskCntr,#'@'
+		bcs	IdleTaskL1
+		mov	#'!',IdleTaskCntr
+IdleTaskL1:	
+		;---------------------------------------------------------------
+		br	IdleTaskLoop1
+;===============================================================================
+;===============================================================================
+;===============================================================================
+;===============================================================================
+; Esta rotina vai ser executada como uma task. Observe que ela é um loop infinito
+; que não termina nunca e a única subrotina que ela chama é 'Sleep'. No entanto
+; as outras tasks do sistema também executam, compartilhando tempo da CPU com esta.
+;-------------------------------------------------------------------------------
+Task1:
+Task1Loop:	mov	Task1Cntr,LCD+33
+		inc	Task1Cntr
+		cmp	Task1Cntr,#'Z'
+		bls	Task1L1
+		mov	#'A',Task1Cntr
+
+Task1L1:	tst	FreeRunning1		; Estamos no modo 'execução livre'...
+		bne	Task1L2			; ...não vamos fazer o 'Sleep'.
+
+		mov	#50,r0			; Põe a task para dormir por 300 ticks.
+		jsr	r7,Sleep
+		br	Task1Loop
+
+Task1L2:	jsr	r7,Yield		; ...vamos fazer 'Yield'.
+		br	Task1Loop
+;===============================================================================
+; Esta rotina vai ser executada como uma task. Observe que ela é um loop infinito
+; que não termina nunca e a única subrotina que ela chama é 'Sleep'. No entanto
+; as outras tasks do sistema também executam, compartilhando tempo da CPU com esta.
+;-------------------------------------------------------------------------------
+Task2:
+Task2Loop:	mov	Task2Cntr,LCD+34
+		inc	Task2Cntr
+		cmp	Task2Cntr,#'z'
+		bls	Task2L1
+		mov	#'a',Task2Cntr
+
+Task2L1:	tst	FreeRunning2		; Estamos no modo 'execução livre'...
+		bne	Task2L2			; ...não vamos fazer 'Sleep'.
+
+		mov	#21,r0			; Põe a task para dormir por 121 ticks.
+		jsr	r7,Sleep
+		br	Task2Loop
+
+Task2L2:	jsr	r7,Yield		; ...vamos fazer 'Yield'.
+		br	Task2Loop
+
+;===============================================================================
+; Esta rotina vai ser executada como uma task. Observe que ela é um loop infinito
+; que não termina nunca e a única subrotina que ela chama é 'Sleep'. No entanto
+; as outras tasks do sistema também executam, compartilhando tempo da CPU com esta.
+;-------------------------------------------------------------------------------
+Task3:
+Task3Loop:	mov	Task3Cntr,LCD+35
+		inc	Task3Cntr
+		cmp	Task3Cntr,#'9'
+		bls	Task3L1
+		mov	#'0',Task3Cntr
+
+Task3L1:	tst	FreeRunning3		; Estamos no modo 'execução livre'...
+		bne	Task3L2			; ...não vamos fazer o 'Sleep'.
+
+		mov	#8,r0			; Põe a task para dormir por 51 ticks.
+		jsr	r7,Sleep
+		br	Task3Loop
+
+Task3L2:	jsr	r7,Yield		; ...vamos fazer 'Yield'.
+		br	Task3Loop
+;===============================================================================
+; Esta rotina vai ser executada como uma task. Observe que ela é um loop infinito
+; que não termina nunca e a única subrotina que ela chama é 'Sleep'. No entanto
+; as outras tasks do sistema também executam, compartilhando tempo da CPU com esta.
+;-------------------------------------------------------------------------------
+TaskKBD:
+TaskKBDLoop:	; Dorme por um tick.
+		mov	#1,r0
+		jsr	r7,Sleep
+
+		; Verifica se tem caractere para ser lido, e se tiver lê.
+		jsr	r7,GetCh
+		; Se não tem, volta para o início.
+		beq	TaskKBDLoop
+
+		;---------------------------------------------------------------
+		; Enquanto não tivermos "queues", vamos passar os dados entre as
+		; tasks por variáveis globais.
+		;---------------------------------------------------------------
+
+		; Vamos testar a tecla '1'.
+		cmp	r0,#'1'
+		bne	TaskKBDLn1
+		; Inverte o flag 'FreeRunning1' da task 1.
+		not	FreeRunning1
+		; Vamos acordar a task agora para o comando ter efeito imediato.
+		mov	#ContextTask1,r0
+		jsr	r7,ResumeTask
+		br	TaskKBDLoop
+
+		; Vamos testar a tecla '2'.
+TaskKBDLn1:	cmp	r0,#'2'
+		bne	TaskKBDLn2
+		; Inverte o flag 'FreeRunning2' da task 2.
+		not	FreeRunning2
+		; Vamos acordar a task agora para o comando ter efeito imediato.
+		mov	#ContextTask2,r0
+		jsr	r7,ResumeTask
+		br	TaskKBDLoop
+
+		; Vamos testar a tecla '3'.
+TaskKBDLn2:	cmp	r0,#'3'
+		bne	TaskKBDLn3
+		; Inverte o flag 'FreeRunning3' da task 3.
+		not	FreeRunning3
+		; Vamos acordar a task agora para o comando ter efeito imediato.
+		mov	#ContextTask3,r0
+		jsr	r7,ResumeTask
+		br	TaskKBDLoop
+
+		; Converte todas as letras para maiúsculas. Pode
+		; corromper outros caracteres, mas para nós não importa.
+TaskKBDLn3:	and	#hdf,r0
+
+		; Vamos testar as teclas 'Z' ou 'z'.
+		cmp	r0,#'Z'
+		bne	TaskKBDLnZ
+		; Zera o relógio.
+		
+		; Precisamos desabilitar as interrupções para não ter "race condition"
+		; no caso da interrupção ocorrer no meio do processo de zeragem.
+		
+		; Poderíamos utilizar 'EnterCriticalSection' e 'ExitCriticalSection'
+		; mas o trecho é muito curto e não tem interação com o resto do RTOS.
+		; Assim fica muito mais rápido e compacto.
+		and	#h7f,INTE
+		clr	Hora
+		clr	Minuto
+		clr	Segundo
+		or	#h80,INTE
+		jmp	TaskKBDResClk
+
+		; Vamos testar as teclas 'H' ou 'h'.
+TaskKBDLnZ:	cmp	r0,#'H'
+		bne	TaskKBDLnH
+		; Incrementa a hora.
+		and	#h7f,INTE
+		mov	Hora,r0
+		inc	r0
+		cmp	r0,#24
+		bcs	TaskKBDLnHa
+		clr	r0
+TaskKBDLnHa:	mov	r0,Hora
+		or	#h80,INTE
+		br	TaskKBDResClk
+
+		; Vamos testar as teclas 'M' ou 'm'.
+TaskKBDLnH:	cmp	r0,#'M'
+		bne	TaskKBDLnM
+		; Incrementa o minuto.
+		and	#h7f,INTE
+		mov	Minuto,r0
+		inc	r0
+		cmp	r0,#60
+		bcs	TaskKBDLnMa
+		clr	r0
+TaskKBDLnMa:	mov	r0,Minuto
+		or	#h80,INTE
+		br	TaskKBDResClk
+
+		; Vamos testar as teclas 'S' ou 's'.
+TaskKBDLnM:	cmp	r0,#'S'
+		bne	TaskKBDLnS
+		; Incrementa o segundo.
+		and	#h7f,INTE
+		mov	Segundo,r0
+		inc	r0
+		cmp	r0,#60
+		bcs	TaskKBDLnSa
+		clr	r0
+TaskKBDLnSa:	mov	r0,Segundo
+		or	#h80,INTE
+		br	TaskKBDResClk
+
+		; Vamos testar as teclas 'P' ou 'p'.
+TaskKBDLnS:	cmp	r0,#'P'
+		bne	TaskKBDLnP
+		mov	#1,Parado
+		br	TaskKBDResClk2
+
+		; Vamos testar as teclas 'C' ou 'c'.
+TaskKBDLnP:	cmp	r0,#'C'
+		bne	TaskKBDLnC
+		tst	Parado
+		beq	TaskKBDLnC
+		mov	#0,Parado
+		br	TaskKBDResClk2
+
+TaskKBDLnC:	jmp	TaskKBDLoop
+
+		; Acorda a task 'TaskClk' para ela exibir a hora atualizada.
+TaskKBDResClk:	mov	#ContextTaskClk,r0
+		jsr	r7,ResumeTask
+		jmp	TaskKBDLoop
+
+		; Acorda a task 'TaskClk2' para ela mudar de modo parado/contando.
+TaskKBDResClk2:	mov	#ContextTaskClk2,r0
+		jsr	r7,ResumeTask
+		jmp	TaskKBDLoop
+;===============================================================================
+; Divide um número de 0 a 99 por 10 e retorna o quociente e o resto da divisão.
+;
+; Parâmetros:
+;	r0	Número a dividir.
+;
+; Retorna:
+;	r0	Resto da divisão.
+;	r2	Quociente da divisão.
+;-------------------------------------------------------------------------------
+Div10:		mov	#0,r2			; Inicializa o quociente com zero.
+		br	Div10Start
+
+LoopDiv10:	sub	#10,r0			; Subtraimos dez do dividendo...
+		inc	r2			; ...e incrementamos o quociente
+
+Div10Start:	cmp	r0,#10			; Se o dividendo é menor que dez...
+		bcc	LoopDiv10		; ...não podemos mais subtrair.
+
+		rts	r7			; Retorna para o chamador.
+;===============================================================================
+; Imprime um número de 0 a 99 em duas colunas com zero à esquerda se necessário.
+;
+; Parâmetros:
+;	r0	Número a ser impresso (0 a 99).
+;	r1	Coluna da tela a imprimir.
+;
+; Retorna:
+;	r1	Coluna incrementada.
+;-------------------------------------------------------------------------------
+Print2Decimals:	jsr	r7,Div10
+
+		add	#'0',r2
+		mov	r2,LCD(r1)
+		inc	r1
+		add	#'0',r0
+		mov	r0,LCD(r1)
+		inc	r1
+
+		rts	r7
+;===============================================================================
+; Imprime um caractere na tela.
+;
+; Parâmetros:
+;	r0	Caractere a ser impresso (ASCII).
+;	r1	Coluna da tela a imprimir.
+;
+; Retorna:
+;	r1	Coluna incrementada.
+;-------------------------------------------------------------------------------
+PrintChar:	mov	r0,LCD(r1)
+		inc	r1
+
+		rts	r7
+;===============================================================================
+TaskClk:
+
+TaskClkLoop:	and	#h7f,INTE
+		mov	Hora,r0
+		mov	Minuto,r3
+		mov	Segundo,r4
+		or	#h80,INTE
+
+		; Inicia a impressão do relógio na coluna 23.
+		mov	#23,r1
+
+		; Hora já está em r0
+		jsr	r7,Print2Decimals
+
+		mov	#':',r0
+		jsr	r7,PrintChar
+
+		mov	r3,r0
+		jsr	r7,Print2Decimals
+
+		mov	#':',r0
+		jsr	r7,PrintChar
+
+		mov	r4,r0
+		jsr	r7,Print2Decimals
+
+		; Vamos suspender a task por tempo indeterminado, já que não tem o que fazer.
+		; Quando a hora mudar ou tiver algum comando, as tasks 'TaskClk2' ou 'TaskKBD'
+		; vão tirar esta da suspensão com 'ResumeTask'.
+		mov	#-1,r0
+		jsr	r7, Sleep
+
+		; Precisamos pegar o tick atual para usar como base para as próximas contagens.
+		br	TaskClkLoop
+;===============================================================================
+NEXT_TICK:	equ	2
+;===============================================================================
+TaskClk2:	;---------------------------------------------------------------
+		; Aqui estamos efetivamente criando uma variável local na pilha
+		; no offset 0(r6).
+		; Para funcionar não devemos ficar movendo o SP (r6), senão o
+		; offset para acessar a variável relativo ao SP vai ficar mudando.
+		;---------------------------------------------------------------
+		sub	#6,r6
+
+TaskClk2Loop1:	mov	SystemTick,NEXT_TICK(r6)
+
+TaskClk2Loop2:	tst	Parado
+		beq	TaskClk2L1
+
+		; Vamos suspender a task por tempo indeterminado, já que não tem o que fazer.
+		; Quando tiver algum comando, a task de teclado vai tirar esta da suspensão com 'ResumeTask'.
+		; Nota: Por algum motivo, 'Sleep( -1 );' está causando travamento aqui,
+		; por enquanto vamos fazer um delay bem grande.
+		mov	#30000,r0
+		jsr	r7,Sleep
+
+		; Acabamos de sair de uma espera de duração indeterminada, precisamos
+		; pegar o tick atual para usar como base para as próximas contagens.
+		br	TaskClk2Loop1
+TaskClk2L1:	
+		; Incrementa o relógio
+		and	#h7f,INTE
+		add	#1,Segundo
+		cmp	Segundo,#60
+		bcs	TaskClk2L2
+		mov	#0,Segundo
+		add	#1,Minuto
+		cmp	Minuto,#60
+		bcs	TaskClk2L2
+		mov	#0,Minuto
+		add	#1,Hora
+		cmp	Hora,#24
+		bcs	TaskClk2L2
+		mov	#0,Hora
+TaskClk2L2:	or	#h80,INTE
+
+		; Acorda a task 'TaskClk' para ela exibir a hora atualizada.
+		mov	#ContextTaskClk,r0
+		jsr	r7,ResumeTask
+
+		;---------------------------------------------------------------
+		; Não podemos simplesmente fazer 'Sleep( 100 );', pois pode (vai)
+		; ter um acréscimo de alguns ticks a cada loop, que faz com que
+		; o relógio conte ligeiramente mais devagar do que deveria.
+		; Por isso sempre vamos manter o valor do tick que queremos acordar
+		; em NEXT_TICK, (somando 100 cada vez) e vendo quanto falta para
+		; o tick corrente chegar naquele valor.
+		; Nota: Essa abordagem não funciona se o sistema tiver latências
+		; próximas ou maiores que esse número de ticks (100).
+		; Nota: Pode ter um 'jitter' (flutuação) do momento exato em que
+		; o relógio muda de valor, mas não tem erro cumulativo.
+		;---------------------------------------------------------------
+		add	#100,NEXT_TICK(r6)
+		mov	NEXT_TICK(r6),r0
+		sub	SystemTick,r0
+		jsr	r7,Sleep
+
+		br	TaskClk2Loop2
+;===============================================================================
+COLUMN:		equ	2
+MSGSTART:	equ	4
+;===============================================================================
+TaskMsg:	sub	#8,r6
+
+TaskMsgLoop1:	mov	#0,MSGSTART(r6)
+
+TaskMsgLoop2:	mov	#0,COLUMN(r6)
+
+TaskMsgLoop3:	mov	COLUMN(r6),r1
+		mov	MSGSTART(r6),r2
+		add	r1,r2
+		mov	Msg(r2),r0
+		jsr	r7,PrintChar
+		inc	COLUMN(r6)
+		cmp	COLUMN(r6),#22
+		bne	TaskMsgLoop3
+
+		mov	#1,r0
+		jsr	r7,Sleep
+
+		inc	MSGSTART(r6)
+		cmp	MSGSTART(r6),#209
+		bne	TaskMsgLoop2
+
+		br	TaskMsgLoop1
+;-------------------------------------------------------------------------------
+Msg:		dab	'                       1-Sincronismo Task1   2-Sincronismo '
+		dab	'Task2   3-Sincronismo Task3   Z-Zera relogio   S-Incrementa '
+		dab	'segundo   M-Incrementa minuto   H-Incrementa hora   P-Para relogio   '
+		dab	'C-Continua relogio                          '
+MsgEnd:
+;===============================================================================
+;===============================================================================
+;===============================================================================
+;===============================================================================
+; Variáveis do sistema.
+;-------------------------------------------------------------------------------
+TickHook:	dw	0			; Ponteiro para uma função do usuário que será executada uma
+						; vez a cada tick do timer. Pode ser NULL.
+AlreadySwitched:dw	0			; Flag para indicar que uma task recebeu parte de um tick de outra
+						; task que foi bloqueada (invocou 'Sleep' ou outra coisa) e que
+						; ainda tem direito a mais um tick inteiro.
+SystemTick:	dw	0			; Contador de ticks do sistema. Volta a zero depois de 65536 ticks.
+						; O maior período de tempo que pode ser controlado é metade desse valor,
+						; o que dá 327,67 s com um tick de 10 ms.
+CurrentTask:	dw	0			; Ponteiro para a task correntemente executando.
+ReadyTasks:	dw	0			; Ponteiro para a primeira task da lista de tasks prontas.
+DelayedTasks:	dw	0			; Ponteiro para a primeira task da lista de tasks em espera.
+CriticalSctCnt:	dw	0			; Contador de quantas vezes 'EnterCriticalSection' foi invocado.
+;-------------------------------------------------------------------------------
+KBDBuffer:	dw	0			; Buffer de software para as teclas lidas do teclado.
+;===============================================================================
+StackIdleTask:	daw	[IDLESTACKLEN/2]	; Pilha da 'IdleTask'.
+ContextIdleTask:daw	[CTXT_LENGTH]		; Estrutura contexto da 'IdleTask'.
+;-------------------------------------------------------------------------------
+ContextTask1:	daw	[CTXT_LENGTH]		; Estrutura contexto da 'Task1'.
+ContextTask2:	daw	[CTXT_LENGTH]		; Estrutura contexto da 'Task2'.
+ContextTask3:	daw	[CTXT_LENGTH]		; Estrutura contexto da 'Task3'.
+ContextTaskClk:	daw	[CTXT_LENGTH]		; Estrutura contexto da 'TaskClk'.
+ContextTaskClk2:daw	[CTXT_LENGTH]		; Estrutura contexto da 'TaskClk2'.
+ContextTaskKBD:	daw	[CTXT_LENGTH]		; Estrutura contexto da 'TaskKBD'.
+ContextTaskMsg:	daw	[CTXT_LENGTH]		; Estrutura contexto da 'TaskMsg'.
+;-------------------------------------------------------------------------------
+StackTask1:	daw	[TASKSSTACKLEN/2]	;Pilha da 'Task1'.
+StackTask2:	daw	[TASKSSTACKLEN/2]	;Pilha da 'Task2'.
+StackTask3:	daw	[TASKSSTACKLEN/2]	;Pilha da 'Task3'.
+StackTaskClk:	daw	[TASKSSTACKLEN/2]	;Pilha da 'TaskClk'.
+StackTaskClk2:	daw	[TASKSSTACKLEN/2]	;Pilha da 'TaskClk2'.
+StackTaskKBD:	daw	[TASKSSTACKLEN/2]	;Pilha da 'TaskKBD'.
+StackTaskMsg:	daw	[TASKSSTACKLEN/2]	;Pilha da 'TaskMsg'.
+;-------------------------------------------------------------------------------
+; Depois da primeira interrupção nunca mais vai ser usada.
+;-------------------------------------------------------------------------------
+DummyContext:	dw	0
+;===============================================================================
+;===============================================================================
+;===============================================================================
+;===============================================================================
+; Variáveis das tasks.
+;-------------------------------------------------------------------------------
+Task1Cntr:	dw	'A'
+FreeRunning1:	dw	0
+;-------------------------------------------------------------------------------
+Task2Cntr:	dw	'a'
+FreeRunning2:	dw	0
+;-------------------------------------------------------------------------------
+Task3Cntr:	dw	'0'
+FreeRunning3:	dw	0
+;-------------------------------------------------------------------------------
+IdleTaskCntr:	dw	'!'
+;-------------------------------------------------------------------------------
+Hora:		dw	0
+Minuto:		dw	0
+Segundo:	dw	0
+Parado:		dw	0
+;===============================================================================
