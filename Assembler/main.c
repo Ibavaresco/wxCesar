@@ -3,7 +3,7 @@
  casm - Assembler for the abstract computer 'Cesar'
  <https://www.inf.ufrgs.br/arq/wiki/doku.php?id=cesar>
 ================================================================================
- Copyright (c) 2007-2024, Isaac Marino Bavaresco
+ Copyright (c) 2024-2025, Isaac Marino Bavaresco
  All rights reserved.
 
  Redistribution and use in source and binary forms, with or without
