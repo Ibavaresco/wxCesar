@@ -332,6 +332,7 @@ static pairs_t	ReservedWords[]	=
 		{ "r2",  TOKEN_REGISTER, REGISTER_R2 }, { "r3",  TOKEN_REGISTER, REGISTER_R3 },
 		{ "r4",  TOKEN_REGISTER, REGISTER_R4 }, { "r5",  TOKEN_REGISTER, REGISTER_R5 },
 		{ "r6",  TOKEN_REGISTER, REGISTER_R6 }, { "r7",  TOKEN_REGISTER, REGISTER_R7 },
+		{ "sp",  TOKEN_REGISTER, REGISTER_R6 }, { "pc",  TOKEN_REGISTER, REGISTER_R7 },	/* Synonyms: sp == r6, pc == r7 */
 
 		{ "equ", TOKEN_DIRECTIVE, DIRECTIVE_EQU },
 		{ "org", TOKEN_DIRECTIVE, DIRECTIVE_ORG },
@@ -512,6 +513,9 @@ token_t GetToken( cookie_t *Cookie, index_t *Index, char *Buffer, size_t BufferL
 			case ';':
 				while(( c = GetChar( Cookie )) != '\0' && c != '\r' && c != '\n' )
 					{}
+				if( c == '\r' || c == '\n' )
+					UngetChar( Cookie, c );
+				break;
 			}
 		}
 	while( isspace( c ));
@@ -2253,7 +2257,7 @@ static int CompareSymbols( const void *a, const void *b )
 /*============================================================================*/
 int ProcessFile( cookie_t *Cookie, state_t *State, const char *FileName, FILE *File )
 	{
-	int Result, i;
+	int Result;
 
 	for( State->Pass = 1; State->Pass <= NUM_PASSES; State->Pass++ )
 		{
@@ -2270,11 +2274,13 @@ int ProcessFile( cookie_t *Cookie, state_t *State, const char *FileName, FILE *F
 
 	qsort( State->SymbolTable, State->NumSymbols, sizeof State->SymbolTable[0], CompareSymbols );
 
+#if 0
 	printf( "\n       SYMBOL    TABLE       " );
 	printf( "\nDec.  Hex.   Type     Value  " );
 	printf( "\n----- ---- -------- ---------" );
 	for( i = 0; i < State->NumSymbols; i++ )
 		printf( "\n%5u %04x %-8s %s", State->SymbolTable[i].Value, State->SymbolTable[i].Value, State->SymbolTable[i].Type == TYPE_ADDRESS ? "Address" : "Constant", State->SymbolTable[i].Name );
+#endif
 
 	return Result;
 	}
@@ -2359,6 +2365,8 @@ int Process( const char *FileName )
 
 	if( Result >= 0 )
 		{
+		int	i;
+
 		SplitPath( FileName, Path, Name, Ext );
 		strcat( Path, Name );
 		strcat( Path, ".casm.mem" );
@@ -2369,6 +2377,22 @@ int Process( const char *FileName )
 			}
 		fwrite( "\x03" "C16", 4, 1, File );
 		fwrite( Memory, 1, sizeof Memory, File );
+		fclose( File );
+
+		SplitPath( FileName, Path, Name, Ext );
+		strcat( Path, Name );
+		strcat( Path, ".casm.map" );
+		if(( File = fopen( Path, "wb" )) == NULL )
+			{
+			fprintf( stderr, "\nError: Could not create map file \"%s\"\n", Path );
+			return -1;
+			}
+
+		fprintf( File, "Símbolo                          Valor Decimal Valor Hexadecimal\r\n" );
+		fprintf( File, "-------------------------------- ------------- -----------------" );
+		for( i = 0; i < State.NumSymbols; i++ )
+			fprintf( File, "\r\n%-32.32s %13u %17X", State.SymbolTable[i].Name, State.SymbolTable[i].Value, State.SymbolTable[i].Value );
+
 		fclose( File );
 		}
 
