@@ -112,6 +112,8 @@ typedef enum
 	TOKEN_BINARY_XOR,
 	TOKEN_LOGICAL_OR,
 	TOKEN_LOGICAL_AND,
+	TOKEN_EXCLAMATION_MARK,
+	TOKEN_TILDE,
 	TOKEN_PLUS,
 	TOKEN_MINUS,
 	TOKEN_ASTERISK,
@@ -539,6 +541,8 @@ token_t GetToken( cookie_t *Cookie, index_t *Index, char *Buffer, size_t BufferL
 			return TOKEN_CLOSE_BRACKET;
 		case '#':
 			return TOKEN_SHARP;
+		case '~':
+			return TOKEN_TILDE;
 		case '+':
 			return TOKEN_PLUS;
 		case '-':
@@ -551,6 +555,8 @@ token_t GetToken( cookie_t *Cookie, index_t *Index, char *Buffer, size_t BufferL
 			return TOKEN_PERCENT;
 		case '$':
 			return TOKEN_CURRENCY;
+		case '^':
+			return TOKEN_BINARY_XOR;
 		case '&':
 			if(( c = GetChar( Cookie )) == '&' )
 				return TOKEN_LOGICAL_AND;
@@ -579,6 +585,16 @@ token_t GetToken( cookie_t *Cookie, index_t *Index, char *Buffer, size_t BufferL
 			else
 				UngetChar( Cookie, c );
 			return TOKEN_GREATER_THAN;
+		case '=':
+			if(( c = GetChar( Cookie )) != '=' )
+				return TOKEN_INVALID;
+			return TOKEN_EQUAL_TO;
+		case '!':
+			if(( c = GetChar( Cookie )) == '=' )
+				return TOKEN_NOT_EQUAL_TO;
+			else
+				UngetChar( Cookie, c );
+			return TOKEN_EXCLAMATION_MARK;
 		}
 
 	if( isdigit( c ))
@@ -729,10 +745,49 @@ static type_t ParseValueExpression( cookie_t *Cookie, state_t *State, result_t *
 			Result->Type	= TYPE_ADDRESS;
 			return Result->Type;
 
+		case TOKEN_EXCLAMATION_MARK:
+			/* The unary logical negation returns 0 if the value is not zero or 1 if the value is zero. */
+			Type1	= ParseValueExpression( Cookie, State, Result );
+			if( Type1 == TYPE_UNDEFINED )
+				{
+				Result->Number	= 0;
+				Result->Type	= TYPE_UNDEFINED;
+				}
+			else if( Type1 != TYPE_NUMBER && Type1 != TYPE_ADDRESS )
+				{
+				Error( Cookie, "Invalid expression" );
+				return TYPE_INVALID;
+				}
+			Result->Number	= !Result->Number;
+			Result->Type	= TYPE_NUMBER;
+			return Result->Type;
+
+		case TOKEN_TILDE:
+			/* The unary binary negation. */
+			Type1	= ParseValueExpression( Cookie, State, Result );
+			if( Type1 == TYPE_UNDEFINED )
+				{
+				Result->Number	= 0;
+				Result->Type	= TYPE_UNDEFINED;
+				}
+			else if( Type1 != TYPE_NUMBER && Type1 != TYPE_ADDRESS )
+				{
+				Error( Cookie, "Invalid expression" );
+				return TYPE_INVALID;
+				}
+			Result->Number	= ~Result->Number;
+			Result->Type	= TYPE_NUMBER;
+			return Result->Type;
+
 		case TOKEN_PLUS:
-			/* A unary plus sign does nothing, just return the expression that folows it. */
+			/* The unary plus sign does nothing, just returns the expression that follows it. */
 			Type1 = ParseValueExpression( Cookie, State, Result );
-			if( Type1 != TYPE_NUMBER && Type1 != TYPE_ADDRESS )
+			if( Type1 == TYPE_UNDEFINED )
+				{
+				Result->Number	= 0;
+				Result->Type	= TYPE_UNDEFINED;
+				}
+			else if( Type1 != TYPE_NUMBER && Type1 != TYPE_ADDRESS )
 				{
 				Error( Cookie, "Invalid expression" );
 				return TYPE_INVALID;
@@ -741,9 +796,14 @@ static type_t ParseValueExpression( cookie_t *Cookie, state_t *State, result_t *
 			return Result->Type;
 
 		case TOKEN_MINUS:
-			/* A unary minus sign inverts the sign of the expression. */
+			/* The unary minus sign inverts the sign of the expression. */
 			Type1	= ParseValueExpression( Cookie, State, Result );
-			if( Type1 != TYPE_NUMBER && Type1 != TYPE_ADDRESS )
+			if( Type1 == TYPE_UNDEFINED )
+				{
+				Result->Number	= 0;
+				Result->Type	= TYPE_UNDEFINED;
+				}
+			else if( Type1 != TYPE_NUMBER && Type1 != TYPE_ADDRESS )
 				{
 				Error( Cookie, "Invalid expression" );
 				return TYPE_INVALID;
